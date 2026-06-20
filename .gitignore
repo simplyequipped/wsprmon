@@ -44,13 +44,19 @@ build/
 Build/
 build-*/
 
-# CMake generated files
+# CMake generated files (note: this project uses a hand-written Makefile)
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
-Makefile
 install_manifest.txt
 compile_commands.json
+
+# wsprmon binary + wsprd runtime output / temp capture
+/wsprmon
+ALL_WSPR.TXT
+wspr_spots.txt
+hashtable.txt
+*.wav
 
 # Temporary files
 *.tmp
