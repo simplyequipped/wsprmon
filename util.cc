@@ -31,7 +31,12 @@ writewav(const std::vector<double> &samples, const char *filename, int rate)
   sf.samplerate = rate;
   sf.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
   SNDFILE *f = sf_open(filename, SFM_WRITE, &sf);
-  assert(f);
+  if(f == 0){
+    // don't abort a long-running capture on a transient write failure;
+    // skip the slot (wsprd then sees no input and the cycle yields 0 decodes).
+    fprintf(stderr, "writewav: cannot write %s: %s\n", filename, sf_strerror(0));
+    return;
+  }
   sf_write_double(f, v.data(), v.size());
   sf_write_sync(f);
   sf_close(f);

@@ -75,6 +75,11 @@ to_12k(const std::vector<double> &in, int rate)
 static void
 setup_workdir(const std::string &dir)
 {
+  if(access(dir.c_str(), W_OK) != 0){
+    fprintf(stderr, "wsprmon: working directory not writable: %s (use -a <dir>)\n",
+            dir.c_str());
+    exit(1);
+  }
   const char *grow[] = { "ALL_WSPR.TXT", "wspr_spots.txt", "wspr_timer.out", 0 };
   for(int i = 0; grow[i]; i++){
     std::string p = dir + "/" + grow[i];
@@ -202,7 +207,8 @@ main(int argc, char *argv[])
 {
   const char *card = 0, *chan = "0", *cli_wsprd = 0;
   double dial = 0;
-  std::string dir = ".";
+  std::string dir;
+  bool dir_set = false;
   std::vector<std::string> files;
   bool list = false;
 
@@ -217,6 +223,7 @@ main(int argc, char *argv[])
       dial = atof(argv[++i]);
     } else if(a == "-a" && i + 1 < argc){
       dir = argv[++i];
+      dir_set = true;
     } else if(a == "-wsprd" && i + 1 < argc){
       cli_wsprd = argv[++i];
     } else if(a == "-file"){
@@ -244,6 +251,17 @@ main(int argc, char *argv[])
 
   if(dial <= 0)
     usage();
+
+  // default to a private temp directory so wsprmon never depends on (and can't
+  // be killed by) a non-writable working directory, e.g. CWD=/ under systemd.
+  if(!dir_set){
+    char tmpl[] = "/tmp/wsprmon.XXXXXX";
+    if(mkdtemp(tmpl) == 0){
+      perror("wsprmon: mkdtemp");
+      return 1;
+    }
+    dir = tmpl;
+  }
 
   setup_workdir(dir);
 
