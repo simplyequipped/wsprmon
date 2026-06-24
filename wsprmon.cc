@@ -24,9 +24,10 @@ static const int CYCLE = 120;           // WSPR slot length, aligned to even min
 static void
 usage()
 {
-  fprintf(stderr, "Usage: wsprmon -card card channel -f dial_MHz [-a workdir] [-wsprd path]\n");
-  fprintf(stderr, "       wsprmon -f dial_MHz -file file.wav ... [-wsprd path]\n");
+  fprintf(stderr, "Usage: wsprmon -card card channel [-f dial_MHz] [-hz] [-a workdir] [-wsprd path]\n");
+  fprintf(stderr, "       wsprmon [-f dial_MHz] [-hz] -file file.wav ... [-wsprd path]\n");
   fprintf(stderr, "       wsprmon -list\n");
+  fprintf(stderr, "  -hz: report frequency in Hz instead of MHz\n");
   fprintf(stderr, "  wsprd binary: -wsprd, else $WSPRD, else PATH, else next to wsprmon\n");
   exit(1);
 }
@@ -90,6 +91,7 @@ setup_workdir(const std::string &dir)
 }
 
 static std::string g_wsprd = "wsprd";   // -wsprd, else $WSPRD, else PATH
+static bool g_hz = false;               // -hz: emit freq in Hz instead of MHz
 
 // write the 12 kHz window, run wsprd, restream its decodes with our timestamp
 static void
@@ -111,12 +113,17 @@ decode_and_emit(const std::vector<double> &s12, double dial,
       if(strstr(line, "<DecodeFinished>"))
         break;
       char tm[16], msg[160];
-      float snr, dt, freq;
+      float snr, dt;
+      double freq;                       // double so Hz keeps full precision
       int drift;
-      if(sscanf(line, "%15s %f %f %f %d %159[^\n]",
+      if(sscanf(line, "%15s %f %f %lf %d %159[^\n]",
                 tm, &snr, &dt, &freq, &drift, msg) == 6){
-        printf("%02d%02d00 %3.0f %4.1f %10.6f %2d  %s\n",
-               hh, mm, snr, dt, freq, drift, msg);
+        if(g_hz)
+          printf("%02d%02d00 %3.0f %4.1f %11.1f %2d  %s\n",
+                 hh, mm, snr, dt, freq * 1e6, drift, msg);
+        else
+          printf("%02d%02d00 %3.0f %4.1f %10.6f %2d  %s\n",
+                 hh, mm, snr, dt, freq, drift, msg);
         decodes++;
       }
     }
@@ -202,6 +209,16 @@ self_dir(const char *argv0)
   return sl == std::string::npos ? "" : s.substr(0, sl);
 }
 
+// can g_wsprd actually be exec'd? a path is checked directly; a bare name
+// (relying on $PATH) is looked up on $PATH.
+static bool
+wsprd_runnable(const std::string &w)
+{
+  if(w.find('/') != std::string::npos)
+    return access(w.c_str(), X_OK) == 0;
+  return on_path(w);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -226,6 +243,8 @@ main(int argc, char *argv[])
       dir_set = true;
     } else if(a == "-wsprd" && i + 1 < argc){
       cli_wsprd = argv[++i];
+    } else if(a == "-hz"){
+      g_hz = true;
     } else if(a == "-file"){
       while(i + 1 < argc)
         files.push_back(argv[++i]);
@@ -249,8 +268,21 @@ main(int argc, char *argv[])
     return 0;
   }
 
-  if(dial <= 0)
+  // -f is optional. Without it the dial stays 0, so wsprd reports the audio offset
+  // instead of an absolute frequency. We still need a source, either -file or -card.
+  if(files.empty() && !card)
     usage();
+
+  // Fail fast if wsprd can't be run: otherwise every slot silently popen()s a
+  // missing command and reports "decodes: 0" forever, indistinguishable from a
+  // dead-quiet band. After the usage() checks, so -h/no-args still show help.
+  if(!wsprd_runnable(g_wsprd)){
+    fprintf(stderr,
+            "wsprmon: wsprd not found or not executable: '%s'\n"
+            "  specify with -wsprd <path>, $WSPRD, on $PATH, or next to wsprmon\n",
+            g_wsprd.c_str());
+    return 1;
+  }
 
   // default to a private temp directory so wsprmon never depends on (and can't
   // be killed by) a non-writable working directory, e.g. CWD=/ under systemd.
