@@ -111,6 +111,35 @@ public:
   }
 };
 
+// Reads a sdrf audio stream (from sdrfanout) on a pipe/FIFO: [24-byte header]
+// [int16 PCM], with a per-window UTC stamp. A reader thread fills a ring buffer;
+// the decode loop windows via now()-latency(), where latency() is measured from
+// the stamps (so this needs no PortAudio clock and is backend-independent).
+class StreamSoundIn : public SoundIn {
+private:
+  std::string src_;     // "-" = stdin, else a FIFO/file path
+  int fd_;
+  int rate_;
+  // circular buffer
+  int n_;
+  short *buf_;
+  volatile int wi_;
+  volatile int ri_;
+  double newest_t_;     // unix time of most recent sample
+  double latency_;      // EMA wall-clock age of the newest sample
+  volatile bool ready_;
+  volatile bool stop_;
+public:
+  StreamSoundIn(std::string src)
+    : src_(src), fd_(-1), rate_(12000), n_(0), buf_(0), wi_(0), ri_(0),
+      newest_t_(0), latency_(0), ready_(false), stop_(false) {}
+  void start();
+  int rate() { return rate_; }
+  double latency() { return latency_; }
+  std::vector<double> get(int n, double &t0, int latest);
+  void reader();        // reader-thread body
+};
+
 #ifdef USE_AIRSPYHF
 class AirspySoundIn : public SoundIn {
  private:

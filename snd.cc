@@ -11,6 +11,9 @@
 #include "fft.h"
 #include <portaudio.h>
 #include <ctype.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <thread>
 
 void
 snd_init()
@@ -142,6 +145,108 @@ SoundIn::levels()
 // generic open.
 // rate can be -1.
 //
+// ---- StreamSoundIn: read a sdrf audio stream (sdrfanout) from a pipe/FIFO ----
+
+static const uint32_t SDRF_MAGIC = 0x46524453;  // "SDRF" on the wire (LE)
+
+#pragma pack(push, 1)
+struct sdrf_tail {  // the 20 bytes after the 4-byte magic
+  uint16_t version, flags;
+  uint32_t rate_hz, nsamples;
+  uint64_t t_usec;
+};
+#pragma pack(pop)
+
+static bool sdrf_readn(int fd, void *p, size_t n) {
+  uint8_t *b = (uint8_t *) p;
+  while(n){
+    ssize_t r = read(fd, b, n);
+    if(r <= 0) return false;
+    b += r; n -= (size_t) r;
+  }
+  return true;
+}
+
+void
+StreamSoundIn::start()
+{
+  if(src_ == "-"){
+    fd_ = 0;
+  } else {
+    fd_ = ::open(src_.c_str(), O_RDONLY);
+    if(fd_ < 0){ perror(src_.c_str()); exit(1); }
+  }
+  rate_ = 12000;
+  n_ = rate_ * 130;                 // 130 s ring (WSPR's 120 s slot plus slack)
+  buf_ = (short *) malloc(sizeof(short) * n_);
+  assert(buf_);
+  wi_ = ri_ = 0;
+  newest_t_ = now();
+  std::thread(&StreamSoundIn::reader, this).detach();
+  while(!ready_ && !stop_) usleep(1000);   // wait for the first framed window
+}
+
+void
+StreamSoundIn::reader()
+{
+  while(!stop_){
+    // resync: slide a 4-byte window until it equals the magic
+    uint32_t m;
+    if(!sdrf_readn(fd_, &m, 4)){ stop_ = true; break; }
+    while(m != SDRF_MAGIC && !stop_){
+      uint8_t b;
+      if(!sdrf_readn(fd_, &b, 1)){ stop_ = true; break; }
+      m = (m >> 8) | ((uint32_t) b << 24);
+    }
+    if(stop_) break;
+
+    sdrf_tail h;
+    if(!sdrf_readn(fd_, &h, sizeof h)){ stop_ = true; break; }
+    if(h.version != 1 || h.rate_hz != 12000 || h.nsamples == 0 || h.nsamples > 1000000)
+      continue;   // implausible header; resync on the next pass
+
+    std::vector<short> pcm(h.nsamples);
+    if(!sdrf_readn(fd_, pcm.data(), (size_t) h.nsamples * 2)){ stop_ = true; break; }
+
+    for(uint32_t i = 0; i < h.nsamples; i++){
+      int nw = (wi_ + 1) % n_;
+      if(nw != ri_){ buf_[wi_] = pcm[i]; wi_ = nw; }
+      // else ring full: drop (get(latest=1) keeps only the recent window anyway)
+    }
+
+    double t_last = h.t_usec / 1e6 + (double)(h.nsamples - 1) / rate_;
+    newest_t_ = t_last;
+    double obs = now() - t_last;
+    if(obs < 0) obs = 0;
+    if(obs > 2.0) obs = 2.0;          // clamp: a bad stamp can't blow up the windowing
+    latency_ = ready_ ? (0.1 * obs + 0.9 * latency_) : obs;
+    ready_ = true;
+  }
+  stop_ = true;
+}
+
+std::vector<double>
+StreamSoundIn::get(int n, double &t0, int latest)
+{
+  std::vector<double> v;
+  if(wi_ == ri_ && !ready_){ t0 = -1; return v; }
+
+  if(latest){
+    while(((wi_ + n_ - ri_) % n_) > n)
+      ri_ = (ri_ + 1) % n_;
+  }
+
+  int avail = (wi_ + n_ - ri_) % n_;
+  t0 = newest_t_ - (double)(avail > 0 ? avail - 1 : 0) / rate_;
+
+  while((int) v.size() < n){
+    if(ri_ == wi_) break;
+    v.push_back(buf_[ri_] / 32767.0);
+    ri_ = (ri_ + 1) % n_;
+  }
+  return v;
+}
+
 SoundIn *
 SoundIn::open(std::string card, std::string chan, int rate)
 {
@@ -152,6 +257,8 @@ SoundIn::open(std::string card, std::string chan, int rate)
     sin = new CardSoundIn(atoi(card.c_str()), atoi(chan.c_str()), rate);
   } else if(card == "file"){
     sin = new FileSoundIn(chan, rate);
+  } else if(card == "stream"){
+    sin = new StreamSoundIn(chan);
 #ifdef USE_AIRSPYHF
   } else if(card == "airspy"){
     sin = new AirspySoundIn(chan, rate);
