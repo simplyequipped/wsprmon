@@ -14,6 +14,10 @@
 #include <time.h>
 #include <string>
 #include <vector>
+#include <signal.h>
+#ifdef __linux__
+#include <sys/prctl.h>   // PR_SET_PDEATHSIG: avoid being orphoned
+#endif
 #include "snd.h"
 #include "util.h"
 
@@ -222,6 +226,12 @@ wsprd_runnable(const std::string &w)
 int
 main(int argc, char *argv[])
 {
+#ifdef __linux__
+  // If parent exits for any reason, even a hard kill that skips its
+  // teardown, the kernel sends SIGTERM
+  prctl(PR_SET_PDEATHSIG, SIGTERM);
+  if(getppid() == 1) return 0;
+#endif
   const char *card = 0, *chan = "0", *cli_wsprd = 0;
   double dial = 0;
   std::string dir;
