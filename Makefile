@@ -1,4 +1,4 @@
-CXX = c++ -O
+CXX = c++ -O3 -ffast-math
 FLAGS = -std=c++17 -I/opt/local/include -I/usr/local/include -I/opt/local/include/libairspyhf -I/usr/include/libairspyhf
 LIBS = -L/opt/local/lib -L/usr/local/lib -lfftw3 -lsndfile
 
